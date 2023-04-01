@@ -1,0 +1,22 @@
+---
+title: Gather github dataset
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+
+# Github API
+The github GraphQL API allows
+
+```{r}
+results_per_page = 50
+total_results = 5000
+total_runs = total_results / results_per_page
+
+library("httr")
+
+body = list(query = paste(""))
+
+for (i in 1:total_runs)
+    print(i)
+```
