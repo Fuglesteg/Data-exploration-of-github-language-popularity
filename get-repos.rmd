@@ -36,15 +36,24 @@ could be so significant as to cause a request timeout where you would get an err
 message and no results. To circumvent this we have set the results per page
 to 10 instead of the max value of 100.
 
+\newpage
+
 # Gathering data
 This is the logic for retrieving data from the GitHub API, it takes into
 consideration the previously mentioned limitations.
 It loops over the specified amount of times (See: "total_runs") and 
 constructs a query using some dynamic and static variables.
 It uses pagination until it encounters no more pages where it will then
-construct a new query see (limitation)[#Max results limitation].
+construct a new query see [max results limitation](#Max results limitation).
 
-```{r}
+Note that you require an authenticaiton key which you can get from the developer settings
+panel in GitHub.
+
+```{r setup, include = FALSE}
+load("repo_edges")
+```
+
+```{r, eval = FALSE}
 results_per_page <- 10
 total_results <- 5000
 total_runs <- total_results / results_per_page
@@ -53,15 +62,24 @@ library("httr")
 
 page_key_query <- ""
 stars_query <- '"stars:100..300000"'
-key <- read.delim("key.secret") # NOTE: Loads the API key from a local file, 
-                                # this key is specific to each user and is required to run the request
+
+# NOTE: Loads the API key from a local file, 
+# this key is specific to each user and is required to run the request
+key <- readLines("key.secret")
+
 repo_edges <- c()
 
 for (i in 1:total_runs) {
+    search_query <- paste(
+        'query: ', stars_query,
+        ', type: REPOSITORY, first: ',
+        results_per_page, ',',
+        page_key_query, sep = "")
+
     query <- paste(
     '
     query {
-        search(query: ', stars_query, ', type: REPOSITORY, first: ', results_per_page, ',', page_key_query, '){
+        search(', search_query, '){
             repositoryCount
                 edges {
                     node {
@@ -107,7 +125,9 @@ for (i in 1:total_runs) {
     if (!data$search$pageInfo$hasNextPage) {
         print("No next page")
         print("Starting new query")
-        stars_query <- paste('"stars:100..', data$search$edges[[results_per_page]]$node$stargazerCount - 1, '"', sep = '')
+        stars_query <- paste('"stars:100..',
+                             data$search$edges[[results_per_page]]$node$stargazerCount - 1, 
+                             '"', sep = '')
         print(stars_query)
         page_key_query <- ""
     } else {
@@ -116,6 +136,8 @@ for (i in 1:total_runs) {
     }
 }
 ```
+
+\newpage
 
 # Formatting the data
 The data is formatted into a data frame.
@@ -127,7 +149,8 @@ summed and stored in a column in the data frame.
 repos <- data.frame()
 for (edge in repo_edges) {
     repo <- edge$node
-    bug_labels <- Filter(function(label) grepl("bug", label$name, ignore.case = TRUE),repo$labels$nodes)
+    bug_labels <- Filter(function(label) grepl("bug", label$name, ignore.case = TRUE),
+                         repo$labels$nodes)
     bug_issues <- 0
     bug_pull_requests <- 0
 
@@ -150,10 +173,9 @@ for (edge in repo_edges) {
                    bug_issues = I(list(bug_issues)),
                    bug_pull_requests = I(list(bug_pull_requests))))
 }
-
-head(repos)
-summary(repos)
 ```
+
+\newpage
 
 # Filtering data
 We are going to work on a subset of the data we have collected.
@@ -170,6 +192,12 @@ There is also a selection of repositories which do not use issues(or at least is
 to track bugs. These include older projects which traditionally use a mailing list (e.g Linux).
 Using the criteria above we are able to filter out these kinds of repositories
 ```{r}
-repos_fmt <- repos[repos$bug_issues != 0 | repos$bug_pull_requests != 0, ]
-# TODO: Filter on language == NULL
+repos_filtered <- repos[repos$bug_issues != 0 | repos$bug_pull_requests != 0, ]
+repos_filtered <- repos_filtered[!(is.null(repos_filtered$language) |
+                        repos_filtered$language == "NULL" |
+                        repos_filtered$language == "" |
+                        is.na(repos_filtered$language)), ]
+
+nrow(repos) # Rows before filtering
+nrow(repos_filtered) # Rows after filtering
 ```
