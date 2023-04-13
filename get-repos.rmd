@@ -50,12 +50,14 @@ Note that you require an authenticaiton key which you can get from the developer
 panel in GitHub.
 
 ```{r setup, include = FALSE}
-load("repo_edges")
+# NOTE: Loads previously collected responses so that requests
+# don't need to be run again every time.
+load("repo_edges_30_000")
 ```
 
-```{r, eval = FALSE}
+```{r get-data, eval = FALSE}
 results_per_page <- 10
-total_results <- 5000
+total_results <- 30000
 total_runs <- total_results / results_per_page
 
 library("httr")
@@ -63,7 +65,7 @@ library("httr")
 page_key_query <- ""
 stars_query <- '"stars:100..300000"'
 
-# NOTE: Loads the API key from a local file, 
+# NOTE: Loads the API key from a local file,
 # this key is specific to each user and is required to run the request
 key <- readLines("key.secret")
 
@@ -132,7 +134,7 @@ for (i in 1:total_runs) {
         page_key_query <- ""
     } else {
         page_key_query <- paste(', after: "', data$search$pageInfo$endCursor, '"', sep = "")
-        print(paste(i, "/", total_runs))
+        cat(paste("\r", i, "/", total_runs))
     }
 }
 ```
@@ -145,7 +147,7 @@ Note that we loop over labels again to check if they actually contain the word b
 And if multiple labels contain the word bug their issues and pull requests will be
 summed and stored in a column in the data frame.
 
-```{r}
+```{r format-data}
 repos <- data.frame()
 for (edge in repo_edges) {
     repo <- edge$node
@@ -177,13 +179,15 @@ for (edge in repo_edges) {
 
 \newpage
 
-# Filtering data
+# Cleaning data
 We are going to work on a subset of the data we have collected.
 Not all data is relevant to our problem so we have decided to filter repos based
 on the following criteria:
 
 - Repo has no issues labelled as bugs or no pull requests labeled as bugs
 - Repo has no primary programming language
+- Repo has a primary language which is not a general purpose programming language (Markup or DSL)
+- Repo language occurs fewer than 10 times
 
 Many repositories on GitHub are not actually software projects,
 they can be collections of other repositories or projects, typically called
@@ -191,12 +195,41 @@ they can be collections of other repositories or projects, typically called
 There is also a selection of repositories which do not use issues(or at least issues on GitHub) 
 to track bugs. These include older projects which traditionally use a mailing list (e.g Linux).
 Using the criteria above we are able to filter out these kinds of repositories
-```{r}
+```{r cleaning-data}
 repos_filtered <- repos[repos$bug_issues != 0 | repos$bug_pull_requests != 0, ]
 repos_filtered <- repos_filtered[!(is.null(repos_filtered$language) |
                         repos_filtered$language == "NULL" |
                         repos_filtered$language == "" |
                         is.na(repos_filtered$language)), ]
+markup_langs <- c(
+    "TeX",
+    "AsciiDoc",
+    "HTML",
+    "Jupyter Notebook",
+    "FreeMarker",
+    "QML",
+    "Roff",
+    "Rich Text Format",
+    "Markdown",
+    "Jinja"
+)
+domain_specific_langs <- c(
+    "Vim Script",
+    "Emacs Lisp",
+    "Makefile",
+    "Dockerfile",
+    "Batchfile",
+    "CSS",
+    "SCSS",
+    "Gnuplot",
+    "Stylus",
+    "Nix",
+    "GLSL"
+)
+repos_filtered <- repos_filtered[!(repos_filtered$language %in% domain_specific_langs), ]
+repos_filtered <- repos_filtered[!(repos_filtered$language %in% markup_langs), ]
+language_occurences <- table(unlist(repos_filtered$language))
+repos_filtered <- repos_filtered[language_occurences[unlist(repos_filtered$language)] > 10, ]
 
 nrow(repos) # Rows before filtering
 nrow(repos_filtered) # Rows after filtering
