@@ -116,8 +116,9 @@ for (i in 1:total_runs) {
     }',
     sep = '')
     body <- list(query = query)
-    response <- POST("https://api.github.com/graphql", body = body, encode = "json",
-        add_headers(Authorization = paste("Bearer", key)))
+    response <-
+        POST("https://api.github.com/graphql", body = body, encode = "json",
+            add_headers(Authorization = paste("Bearer", key)))
     data <- content(response)$data
     repo_edges <- append(repo_edges, data$search$edges)
     if (is.null(data)) {
@@ -128,12 +129,13 @@ for (i in 1:total_runs) {
         print("No next page")
         print("Starting new query")
         stars_query <- paste('"stars:100..',
-                             data$search$edges[[results_per_page]]$node$stargazerCount - 1, 
-                             '"', sep = '')
+             data$search$edges[[results_per_page]]$node$stargazerCount - 1,
+             '"', sep = '')
         print(stars_query)
         page_key_query <- ""
     } else {
-        page_key_query <- paste(', after: "', data$search$pageInfo$endCursor, '"', sep = "")
+        page_key_query <-
+            paste(', after: "', data$search$pageInfo$endCursor, '"', sep = "")
         cat(paste("\r", i, "/", total_runs))
     }
 }
@@ -151,8 +153,9 @@ summed and stored in a column in the data frame.
 repos <- data.frame()
 for (edge in repo_edges) {
     repo <- edge$node
-    bug_labels <- Filter(function(label) grepl("bug", label$name, ignore.case = TRUE),
-                         repo$labels$nodes)
+    bug_labels <-
+        Filter(function(label) grepl("bug", label$name, ignore.case = TRUE),
+            repo$labels$nodes)
     bug_issues <- 0
     bug_pull_requests <- 0
 
@@ -188,6 +191,8 @@ on the following criteria:
 - Repo has no primary programming language
 - Repo has a primary language which is not a general purpose programming language (Markup or DSL)
 - Repo language occurs fewer than 10 times
+- Another limitation of the GitHub API is that sometimes issues and pull request count is wrong
+  so we are filtering on where pull requests or issues count is lower than bug issues and bug PRs
 
 Many repositories on GitHub are not actually software projects,
 they can be collections of other repositories or projects, typically called
@@ -196,11 +201,15 @@ There is also a selection of repositories which do not use issues(or at least is
 to track bugs. These include older projects which traditionally use a mailing list (e.g Linux).
 Using the criteria above we are able to filter out these kinds of repositories
 ```{r cleaning-data}
+# Remove repos with no bugs
 repos_filtered <- repos[repos$bug_issues != 0 | repos$bug_pull_requests != 0, ]
+
+# Remove repos with no primary language
 repos_filtered <- repos_filtered[!(is.null(repos_filtered$language) |
                         repos_filtered$language == "NULL" |
                         repos_filtered$language == "" |
                         is.na(repos_filtered$language)), ]
+
 markup_langs <- c(
     "TeX",
     "AsciiDoc",
@@ -224,12 +233,25 @@ domain_specific_langs <- c(
     "Gnuplot",
     "Stylus",
     "Nix",
-    "GLSL"
+    "GLSL",
+    "R"
 )
-repos_filtered <- repos_filtered[!(repos_filtered$language %in% domain_specific_langs), ]
-repos_filtered <- repos_filtered[!(repos_filtered$language %in% markup_langs), ]
+# Remove repos with unrelevant primary language
+repos_filtered <-
+    repos_filtered[!(repos_filtered$language %in% domain_specific_langs), ]
+repos_filtered <-
+    repos_filtered[!(repos_filtered$language %in% markup_langs), ]
+
+# Remove repos from languages with less than 10 occurrences
 language_occurences <- table(unlist(repos_filtered$language))
-repos_filtered <- repos_filtered[language_occurences[unlist(repos_filtered$language)] > 10, ]
+repos_filtered <-
+    repos_filtered[language_occurences[unlist(repos_filtered$language)] > 10, ]
+
+# Remove repos with wrong count of issues and PRs
+repos_filtered <-
+    repos_filtered[repos_filtered$pull_requests > repos_filtered$bug_pull_requests, ]
+repos_filtered <-
+    repos_filtered[repos_filtered$issues > repos_filtered$bug_issues, ]
 
 nrow(repos) # Rows before filtering
 nrow(repos_filtered) # Rows after filtering
