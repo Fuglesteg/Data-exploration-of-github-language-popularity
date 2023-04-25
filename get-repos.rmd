@@ -46,8 +46,10 @@ constructs a query using some dynamic and static variables.
 It uses pagination until it encounters no more pages where it will then
 construct a new query see [max results limitation](#Max results limitation).
 
-Note that you require an authenticaiton key which you can get from the developer settings
+Note that you require an authentication key which you can get from the developer settings
 panel in GitHub.
+
+The logic is contained in a function so that we can reuse the query elsewhere. (See: ...)
 
 ```{r setup, include = FALSE}
 # NOTE: Loads previously collected responses so that requests
@@ -56,89 +58,93 @@ load("repo_edges_30_000")
 ```
 
 ```{r get-data, eval = FALSE}
-results_per_page <- 10
-total_results <- 30000
-total_runs <- total_results / results_per_page
 
-library("httr")
+get_repos <- function(n = 10, custom_search_params = "", key = "", results_per_page = 10) {
+    total_runs <- n / results_per_page
+    print(paste(total_runs, " runs total."))
+    library("httr")
+    page_key_query <- ""
+    stars_query <- 'stars:100..300000'
+    repo_edges <- c()
 
-page_key_query <- ""
-stars_query <- '"stars:100..300000"'
+    for (i in 1:total_runs) {
+        search_query <- paste(
+                              'query: "', stars_query,' ', custom_search_params,
+                              '", type: REPOSITORY, first: ',
+                              results_per_page, ',',
+                              page_key_query, sep = "")
+
+        query <- paste(
+                       '
+                       query {
+                           search(', search_query, '){
+                               repositoryCount
+                               edges {
+                                   node {
+                                       ... on Repository {
+                                           stargazerCount
+                                           nameWithOwner
+                                           primaryLanguage {
+                                               name
+                                           }
+                                           issues {totalCount}
+                                           pullRequests {totalCount}
+                                           labels(first: 100, query: "bug") {
+                                               totalCount
+                                               nodes {
+                                                   name
+                                                   pullRequests {
+                                                       totalCount
+                                                   }
+                                                   issues {
+                                                       totalCount
+                                                   }
+                                               }
+                                           }
+                                       }
+                                   }
+                               }
+                               pageInfo {
+                                   endCursor
+                                   hasNextPage
+                               }
+                           }
+                       }',
+                       sep = '')
+        body <- list(query = query)
+        response <-
+            POST("https://api.github.com/graphql", body = body, encode = "json",
+                 add_headers(Authorization = paste("Bearer", key)))
+        data <- content(response)$data
+        if (is.null(data) && content(reponse)$errors) {
+            print(content(response)$errors)
+            print("^ Encountered error, re-running request...")
+            next()
+        }
+        repo_edges <- append(repo_edges, data$search$edges)
+
+        if (!data$search$pageInfo$hasNextPage) {
+            print("No next page")
+            print("Starting new query")
+            stars_query <- paste('"stars:100..',
+                                 data$search$edges[[length(data$search$edges)]]$node$stargazerCount - 1,
+                                 '"', sep = '')
+            print(stars_query)
+            page_key_query <- ""
+        } else {
+            page_key_query <-
+                paste(', after: "', data$search$pageInfo$endCursor, '"', sep = "")
+            cat(paste("\r", i, "/", total_runs))
+        }
+    }
+    return(repo_edges)
+}
+
 
 # NOTE: Loads the API key from a local file,
 # this key is specific to each user and is required to run the request
 key <- readLines("key.secret")
-
-repo_edges <- c()
-
-for (i in 1:total_runs) {
-    search_query <- paste(
-        'query: ', stars_query,
-        ', type: REPOSITORY, first: ',
-        results_per_page, ',',
-        page_key_query, sep = "")
-
-    query <- paste(
-    '
-    query {
-        search(', search_query, '){
-            repositoryCount
-                edges {
-                    node {
-                        ... on Repository {
-                            stargazerCount
-                            nameWithOwner
-                            primaryLanguage {
-                                name
-                            }
-                            issues {totalCount}
-                            pullRequests {totalCount}
-                            labels(first: 100, query: "bug") {
-                                totalCount
-                                nodes {
-                                    name
-                                    pullRequests {
-                                        totalCount
-                                    }
-                                    issues {
-                                        totalCount
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            pageInfo {
-                endCursor
-                hasNextPage
-            }
-        }
-    }',
-    sep = '')
-    body <- list(query = query)
-    response <-
-        POST("https://api.github.com/graphql", body = body, encode = "json",
-            add_headers(Authorization = paste("Bearer", key)))
-    data <- content(response)$data
-    repo_edges <- append(repo_edges, data$search$edges)
-    if (is.null(data)) {
-        break
-    }
-
-    if (!data$search$pageInfo$hasNextPage) {
-        print("No next page")
-        print("Starting new query")
-        stars_query <- paste('"stars:100..',
-             data$search$edges[[results_per_page]]$node$stargazerCount - 1,
-             '"', sep = '')
-        print(stars_query)
-        page_key_query <- ""
-    } else {
-        page_key_query <-
-            paste(', after: "', data$search$pageInfo$endCursor, '"', sep = "")
-        cat(paste("\r", i, "/", total_runs))
-    }
-}
+repo_edges <- get_repos(30000, key = key, results_per_page = 10)
 ```
 
 \newpage
@@ -149,35 +155,39 @@ Note that we loop over labels again to check if they actually contain the word b
 And if multiple labels contain the word bug their issues and pull requests will be
 summed and stored in a column in the data frame.
 
-```{r format-data}
-repos <- data.frame()
-for (edge in repo_edges) {
-    repo <- edge$node
-    bug_labels <-
-        Filter(function(label) grepl("bug", label$name, ignore.case = TRUE),
-            repo$labels$nodes)
-    bug_issues <- 0
-    bug_pull_requests <- 0
+```{r format-data, cache = TRUE}
+format_repo_edges <- function(repo_edges) {
+    repos <- data.frame()
+    for (edge in repo_edges) {
+        repo <- edge$node
+        bug_labels <-
+            Filter(function(label) grepl("bug", label$name, ignore.case = TRUE),
+                   repo$labels$nodes)
+        bug_issues <- 0
+        bug_pull_requests <- 0
 
-    for (label in bug_labels) {
-        bug_issues <- bug_issues + label$issues$totalCount
-        bug_pull_requests <- bug_pull_requests + label$pullRequests$totalCount
+        for (label in bug_labels) {
+            bug_issues <- bug_issues + label$issues$totalCount
+            bug_pull_requests <- bug_pull_requests + label$pullRequests$totalCount
+        }
+
+        if (is.null(repo$primaryLanguage))
+            language <- NULL
+        else
+            language <- repo$primaryLanguage$name
+
+        repos <- rbind(repos,
+                       data.frame(name = repo$nameWithOwner,
+                                  stars = repo$stargazerCount,
+                                  language = I(list(language)),
+                                  issues = repo$issues$totalCount,
+                                  pull_requests = repo$pullRequests$totalCount,
+                                  bug_issues = I(list(bug_issues)),
+                                  bug_pull_requests = I(list(bug_pull_requests))))
     }
-
-    if (is.null(repo$primaryLanguage))
-        language <- NULL
-    else
-        language <- repo$primaryLanguage$name
-
-    repos <- rbind(repos,
-        data.frame(name = repo$nameWithOwner,
-                   stars = repo$stargazerCount,
-                   language = I(list(language)),
-                   issues = repo$issues$totalCount,
-                   pull_requests = repo$pullRequests$totalCount,
-                   bug_issues = I(list(bug_issues)),
-                   bug_pull_requests = I(list(bug_pull_requests))))
+    return(repos)
 }
+repos <- format_repo_edges(repo_edges)
 ```
 
 \newpage
@@ -211,30 +221,39 @@ repos_filtered <- repos_filtered[!(is.null(repos_filtered$language) |
                         is.na(repos_filtered$language)), ]
 
 markup_langs <- c(
-    "TeX",
-    "AsciiDoc",
-    "HTML",
-    "Jupyter Notebook",
-    "FreeMarker",
-    "QML",
-    "Roff",
-    "Rich Text Format",
-    "Markdown",
-    "Jinja"
+    "TeX", "AsciiDoc", "HTML",
+    "Jupyter Notebook", "FreeMarker", "QML",
+    "Roff", "Rich Text Format", "Markdown",
+    "Jinja", "Astro", "ASP",
+    "Bicep", "Bikeshed", "Haml",
+    "Gherkin", "HCL", "Handlebars",
+    "Jsonnet", "Liquid", "Mako",
+    "Mustache", "Nunjucks", "PlantUML",
+    "reStructuredText", "Smarty", "Twig"
 )
 domain_specific_langs <- c(
-    "Vim Script",
-    "Emacs Lisp",
-    "Makefile",
-    "Dockerfile",
-    "Batchfile",
-    "CSS",
-    "SCSS",
-    "Gnuplot",
-    "Stylus",
-    "Nix",
-    "GLSL",
-    "R"
+    "Vim Script", "Emacs Lisp", "Makefile",
+    "Dockerfile", "Batchfile", "CSS",
+    "SCSS", "Gnuplot", "Stylus",
+    "Nix", "GLSL", "R",
+    "ActionScript", "Adblock Filter List", "AGS Script",
+    "ANTLR", "ApacheConf", "AppleScript",
+    "ASL", "AutoHotkey", "AutoIt",
+    "Awk", "Ballerina", "CartoCSS",
+    "Chapel", "CodeQL", "Common Workflow Language",
+    "Ciq", "Cuda", "Dhall",
+    "DM", "Elm", "GDScript",
+    "HLSL", "Inno Setup", "Lean",
+    "Less", "Mathematica", "MATLAB",
+    "nesC", "NSIS", "Open Policy Agent",
+    "OpenQASM", "PLpgSQL", "PostScript",
+    "Processing", "Prolog", "Protocol Buffer",
+    "Pug", "Riot", "Sass",
+    "ShaderLab", "Smali", "Solidity",
+    "Starlark", "Svelte", "SVG",
+    "SWIG", "SystemVerilog", "TSQL",
+    "Verilog", "VHDL", "Vue",
+    "XSLT", "Yacc", "YARA"
 )
 # Remove repos with unrelevant primary language
 repos_filtered <-
@@ -245,7 +264,7 @@ repos_filtered <-
 # Remove repos from languages with less than 10 occurrences
 language_occurences <- table(unlist(repos_filtered$language))
 repos_filtered <-
-    repos_filtered[language_occurences[unlist(repos_filtered$language)] > 10, ]
+    repos_filtered[language_occurences[unlist(repos_filtered$language)] > 1, ]
 
 # Remove repos with wrong count of issues and PRs
 repos_filtered <-
@@ -253,6 +272,46 @@ repos_filtered <-
 repos_filtered <-
     repos_filtered[repos_filtered$issues > repos_filtered$bug_issues, ]
 
+language_occurences <- table(unlist(repos_filtered$language)) # List of languages and their occurrences
+language_occurences <- sort(language_occurences, decreasing = TRUE)
 nrow(repos) # Rows before filtering
 nrow(repos_filtered) # Rows after filtering
+```
+
+\newpage
+
+# Result
+## Top 30 000 repositories
+```{r results-repos, echo = FALSE, results = 'asis'}
+write.csv2(repos_filtered, file = "repos_filtered.csv")
+knitr::kable(repos_filtered[1:10, ])
+```
+
+## Top general purpose programming languages
+```{r results-langs, echo = FALSE, results = 'asis'}
+write.csv2(language_occurences, file = "language_occurences.csv")
+knitr::kable(language_occurences)
+```
+
+# Getting language representative repositories
+Now that we have identified the top used general purpose (programming) languages (GPLs) we
+want to get equal amounts of data for each language to make a fair analysis.
+
+```{r getting-language-representative-repos, eval = false}
+get_lang_repos <- function(n = 10, language, key = "", results_per_page = 10) {
+    language_query <- paste("language", language, sep = ":")
+    return(get_repos(n, custom_search_params = language_query, key = key))
+}
+key <- readLines("key.secret")
+
+lang_repos <- data.frame()
+for (lang in names(language_occurences)) {
+    print(paste("Getting repos of:", lang))
+    lang_repos <- rbind(lang_repos, format_repo_edges(get_lang_repos(800, language = lang, key = key)))
+}
+# Cleaning data
+lang_repos_clean <- lang_repos[!duplicated(lang_repos$name), ]
+lang_repos_occ <- table(unlist(lang_repos$language))
+lang_repos_occ <- lang_repos_occ[lang_repos_occ > 700]
+lang_repos_clean <- lang_repos_clean[lang_repos_clean$lang %in% names(lang_repos_occ), ]
 ```
