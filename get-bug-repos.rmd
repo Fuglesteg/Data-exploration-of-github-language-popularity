@@ -1,0 +1,255 @@
+---
+title: Gather github dataset
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include = FALSE}
+# NOTE: Loads previously collected responses so that requests
+# don't need to be run again every time.
+lang_repos <- read.csv2("lang_repos_raw_100_000.csv")
+```
+
+```{r get-data, eval = FALSE, include = FALSE}
+
+get_repos <- function(n = 10, custom_search_params = "", key = "", results_per_page = 10, body = "") {
+    total_runs <- n / results_per_page
+    print(paste(total_runs, " runs total."))
+    library("httr")
+    page_key_query <- ""
+    stars_query <- 'stars:100..300000'
+    repo_edges <- c()
+
+    i <- 1
+    while (i <= total_runs) {
+        search_query <- paste(
+            'query: "', stars_query, ' ', custom_search_params,
+            '", type: REPOSITORY, first: ',
+            results_per_page,
+            page_key_query, sep = "")
+
+        query <- paste(
+            'query {
+                search(', search_query, ') {
+                    edges {
+                        node {
+                            ... on Repository { ',
+                            body,
+                            '}
+                        }
+                    }
+                    pageInfo {
+                        endCursor
+                        hasNextPage
+                    }
+                }
+            }',
+            sep = '')
+        request_body <- list(query = query)
+        response <-
+            POST("https://api.github.com/graphql", body = request_body, encode = "json",
+                 add_headers(Authorization = paste("Bearer", key)))
+        data <- content(response)$data
+        if (is.null(data) && !is.null(content(response)$errors)) {
+            print(content(response)$errors)
+            print("^ Encountered error, re-running request...")
+            next()
+        }
+        repo_edges <- append(repo_edges, data$search$edges)
+
+        if (!data$search$pageInfo$hasNextPage) {
+            print("No next page")
+            print("Starting new query")
+            stars_query <- paste('stars:100..',
+                data$search$edges[[length(data$search$edges)]]$node$stargazerCount - 1,
+                sep = '')
+            print(stars_query)
+            page_key_query <- ""
+        } else {
+            page_key_query <-
+                paste(', after: "', data$search$pageInfo$endCursor, '"', sep = "")
+            cat(paste("\r", i, "/", total_runs))
+        }
+        i <- i + 1
+    }
+    return(repo_edges)
+}
+
+get_repos_for_language_pop <- function(n = 10, key = "", results_per_page = 10) {
+    body <- "
+    stargazerCount
+    nameWithOwner
+    primaryLanguage {
+        name
+    }
+    pushedAt
+    createdAt
+    forkCount
+    isInOrganization
+    repositoryTopics(first: 100) {
+        nodes {
+            topic {
+                name
+            }
+        }
+    }
+    watchers {
+        totalCount
+    }
+    "
+    return(get_repos(n, key = key, body = body, results_per_page = results_per_page))
+}
+
+# NOTE: Loads the API key from a local file,
+# this key is specific to each user and is required to run the request
+key <- readLines("key.secret")
+repo_lang_edges <- get_repos_for_language_pop(100000, key = key, results_per_page = 100)
+```
+
+# Getting dataset for bug analysis
+
+
+\newpage
+
+# Formatting the data
+The data is processed into the appropriate values and transformed into a data frame.
+Note that we collapse the topic names into a single comma separated string.
+
+```{r format-data, eval = FALSE }
+library(purrr)
+format_lang_repo_edges <- function(repo_edges) {
+    repos <- data.frame()
+    for (edge in repo_edges) {
+        repo <- edge$node
+
+        if (is.null(repo$primaryLanguage))
+            language <- NULL
+        else
+            language <- repo$primaryLanguage$name
+
+        # Turn topics into a csv string
+        topics <-
+            map(repo$repositoryTopics$nodes,
+                function(node) return(node$topic$name))
+        topics <- paste(topics, collapse = ",")
+
+        repos <- rbind(repos,
+            data.frame(
+                name = repo$nameWithOwner,
+                stars = repo$stargazerCount,
+                language = I(list(language)),
+                pushedAt = repo$pushedAt,
+                createdAt = repo$createdAt,
+                forkCount = repo$forkCount,
+                isInOrganization = repo$isInOrganization,
+                watcher = repo$watcher$totalCount,
+                topics = topics
+            )
+        )
+    }
+    return(repos)
+}
+
+lang_repos <- format_lang_repo_edges(repo_lang_edges)
+```
+
+\newpage
+
+# Cleaning data
+We are going to work on a subset of the data we have collected.
+Not all data is relevant to our problem so we have decided to filter repos based
+on the following criteria:
+
+- Repo has no primary programming language
+- Repo has a primary language which is not a general purpose programming language (Markup, framework or DSL)
+- Repo language occurs fewer than 10 times
+
+- RQ2:
+    - Another limitation of the GitHub API is that sometimes issues and pull request count is wrong
+      so we are filtering on where pull requests or issues count is lower than bug issues and bug PRs
+    - Repo has no issues labelled as bugs or no pull requests labeled as bugs
+
+We remove repositories which do not help in answering our research questions,
+these are languages which do not give information about the langugages we wish
+to analyse.
+
+```{r cleaning-data}
+# Remove repos with no primary language
+lang_repos_clean <- lang_repos[!(is.null(lang_repos$language) |
+    lang_repos$language == "NULL" |
+    lang_repos$language == "" |
+    is.na(lang_repos$language)), ]
+
+markup_langs <- c(
+    "TeX", "AsciiDoc", "HTML",
+    "Jupyter Notebook", "FreeMarker", "QML",
+    "Roff", "Rich Text Format", "Markdown",
+    "Jinja", "Astro", "ASP",
+    "Bicep", "Bikeshed", "Haml",
+    "Gherkin", "HCL", "Handlebars",
+    "Jsonnet", "Liquid", "Mako",
+    "Mustache", "Nunjucks", "PlantUML",
+    "reStructuredText", "Smarty", "Twig",
+    "XML"
+)
+domain_specific_langs <- c(
+    "Vim Script", "Emacs Lisp", "Makefile",
+    "Dockerfile", "Batchfile", "CSS",
+    "SCSS", "Gnuplot", "Stylus",
+    "Nix", "GLSL", "R",
+    "ActionScript", "Adblock Filter List", "AGS Script",
+    "ANTLR", "ApacheConf", "AppleScript",
+    "ASL", "AutoHotkey", "AutoIt",
+    "Awk", "Ballerina", "CartoCSS",
+    "Chapel", "CodeQL", "Common Workflow Language",
+    "Ciq", "Cuda", "Dhall",
+    "DM", "Elm", "GDScript",
+    "HLSL", "Inno Setup", "Lean",
+    "Less", "Mathematica", "MATLAB",
+    "nesC", "NSIS", "Open Policy Agent",
+    "OpenQASM", "PLpgSQL", "PostScript",
+    "Processing", "Prolog", "Protocol Buffer",
+    "Pug", "Riot", "Sass",
+    "ShaderLab", "Smali", "Solidity",
+    "Starlark", "Svelte", "SVG",
+    "SWIG", "SystemVerilog", "TSQL",
+    "Verilog", "VHDL", "Vue",
+    "XSLT", "Yacc", "YARA", "CMake"
+)
+# Remove repos with unrelevant primary language
+lang_repos_clean <-
+    lang_repos_clean[!(lang_repos_clean$language %in% domain_specific_langs), ]
+lang_repos_clean <-
+    lang_repos_clean[!(lang_repos_clean$language %in% markup_langs), ]
+
+# Remove repos from languages with less than 10 occurrences
+language_occurences <- table(unlist(lang_repos_clean$language))
+lang_repos_clean <-
+    lang_repos_clean[language_occurences[unlist(lang_repos_clean$language)] > 10, ]
+
+# List of languages and their occurrences
+# Ran twice to represent the same values as the cleaned dataset
+language_occurences <- table(unlist(lang_repos_clean$language))
+language_occurences <- sort(language_occurences, decreasing = TRUE)
+nrow(lang_repos) # Rows before filtering
+nrow(lang_repos_clean) # Rows after filtering
+```
+
+\newpage
+
+# Results
+The results is a dataset of the top 100 000 repositories on GitHub with specific
+filtered on those containing a primary programming language.
+## Top 100 000 repositories
+A sample of the first five rows of our dataset used for RQ1.
+```{r results-repos, echo = FALSE, results = 'asis'}
+knitr::kable(lang_repos_clean[1:5, ],
+    col.names = colnames(lang_repos_clean))
+```
+
+## Top general purpose programming languages
+A sample of the top programming languages sorted by occurrences.
+```{r results-langs, echo = FALSE, results = 'asis'}
+knitr::kable(language_occurences[language_occurences > 300],
+    col.names = c("Language", "Frequency"))
+```

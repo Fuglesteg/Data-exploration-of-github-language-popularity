@@ -1,0 +1,140 @@
+---
+title: Language popularity regression
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include = FALSE}
+lang_repos_clean <- read.csv2("lang_repos_clean_100_000_v2.csv")
+```
+
+# Language popularity regression
+Here we wish to answer our first research question and attempt a basic prediction
+of how language popularity might change in the future. We do this by building
+a model using our current data and using it to predict future popularity based
+on current trends.
+
+## Preparation of data
+
+We first need to prepare data for analysis, we want to find a regression curve
+that can accurately predict the trend of the current data. We will later extend
+the model to attempt a basic prediction of future popularity of the top 10
+programming languages. In this first step though we only wish to prepare our
+data for analysis. Because we wish to predict the trend of language popularity
+we need to construct a timeline of popularity for each language. The format of
+the data will thus be a data frame containing a column for each language and a
+"day" column which will have a row for each day in the timespan. Each language
+column will contain the popularity for each of these days. The popularity will
+be calculated based on how many of the repositories in the dataset were active
+at the time.
+
+An example of our dataset:
+
+| Day | C++ | C# |
+|---|---|---|
+|2007-10-29|146|10|
+|2007-10-30|150|12|
+
+```{r preparing}
+library(magrittr)
+
+# Format date strings to date data type
+lang_repos_clean$createdAt <-  lang_repos_clean$createdAt %>% as.Date(format = "%Y-%m-%d")
+lang_repos_clean$pushedAt <- lang_repos_clean$pushedAt %>% as.Date(format = "%Y-%m-%d")
+
+# Find the start and end date
+min <- lang_repos_clean[which.min(lang_repos_clean$createdAt), ]$createdAt
+max <- lang_repos_clean[which.max(lang_repos_clean$createdAt), ]$createdAt
+
+# Create sequence timeline spanning timespan
+range <- seq(min, max, by = "day")
+
+# Extract the languages that occur in the dataset as unique values
+languages <- lang_repos_clean$language %>% unlist() %>% table() %>% names()
+top_languages <- lang_repos_clean$language %>% unlist() %>% table() %>% sort(decreasing = TRUE)
+
+# Create timeline for processing language popularity
+lang_timeline <- data.frame(day = range)
+
+# Add languages as columns in timeline
+lang_df <- data.frame(matrix(0, ncol = length(languages)))
+colnames(lang_df) <- languages
+lang_timeline <- cbind(lang_timeline, lang_df)
+
+# For every repo add 1 to the timespan where it has been active createdAt -> pushedAt
+for (i in 1:nrow(lang_repos_clean)) {
+    repo <- lang_repos_clean[i, ]
+    lang_timeline[lang_timeline$day %in% repo$createdAt:repo$pushedAt, repo$language] <- 
+        lang_timeline[lang_timeline$day %in% repo$createdAt:repo$pushedAt, repo$language] + 1
+}
+
+# Remove most recent data as it is inaccurate
+lang_timeline <- lang_timeline[lang_timeline$day < max - 500, ]
+```
+
+## Regression
+
+Next we perform regression on our timeline, our previous data structure is reshaped
+into a simpler data frame using the "melt" function. The data now looks like this:
+
+|day|variable|value|
+|---|---|---|
+|2007-10-29|C++|146|
+|2007-10-30|C++|150|
+|2007-10-29|C#|10|
+|2007-10-30|C#|12|
+
+This is done to prepare the data for our regression method. We are using the
+"gam" function to construct a Gaussian polynomial regression model. This is a model
+we landed on after analysing results and visualisations of multiple models.
+The method formulae contains a smoothing function to further generalize
+results("s" function).
+
+```{r regression}
+# Turn timeline language columns into variables on "variable" column
+library(reshape2)
+lang_time_df <- melt(lang_timeline, id.vars = "day")
+
+# Numerical date representation for use in regression model
+lang_time_df$day_num <- as.numeric(lang_time_df$day)
+
+# Regression (GAM) Gaussian polynomial regression model
+library(mgcv)
+timeline.fit <- gam(value ~ variable + s(day_num, bs = "cs"), data = lang_time_df)
+
+# Remove further unused column
+lang_time_df$day_num <- NULL
+
+# Print output in non-scientific notation
+options("scipen" = 100, "digits" = 4)
+
+# Print summary of regression model
+summary(timeline.fit)
+
+# Select the top 10 programming languages for visualisation
+lang_time_df_top <- lang_time_df[lang_time_df$variable %in% names(top_languages[1:10]), ]
+
+# Change name of column "variable"
+lang_time_df_top$Language <- lang_time_df_top$variable
+lang_time_df_top$variable <- NULL
+
+# Visualising current model and data with the model prediction up to 2030
+# Model is generated again internally in graph,
+# but uses the same model and formulae as "timeline.fit"
+library(ggplot2)
+ggplot(lang_time_df_top, aes(x = day, y = value, col = Language)) +
+    geom_line() +
+    xlim(min, as.Date("2030-01-01")) +
+    ylim(0, 14000) +
+    xlab("Date") +
+    ylab("Popularity") +
+    geom_vline(xintercept = max - 500) +
+    stat_smooth(
+        aes(x = day, y = value, col = Language, linetype = Language),
+        method = "gam", formula = y ~ s(x, bs = "cs"),
+        fullrange = TRUE) +
+    labs(title = "Future trends of the top 10 programming Languages") +
+    theme_bw()
+```
+
+## Analysis of data

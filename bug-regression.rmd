@@ -1,0 +1,65 @@
+---
+title: Regression of bugs in GitHub repositories
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# Format data
+Load data from csv file
+```{r setup, include = FALSE}
+repos <- read.csv2("lang_repos.csv")
+```
+
+Calculate percentage of bugs for each repo
+```{r bug-percent}
+repos$bug_issues_perc <- repos$bug_issues / repos$issues * 100
+repos$bug_pull_requests_perc <- repos$bug_pull_requests / repos$pull_requests * 100
+repos <- repos[repos$bug_issues_perc != Inf, ]
+repos <- repos[!is.na(repos$bug_issues_perc), ]
+repos <- repos[repos$bug_issues_perc != 0, ]
+repos_bugs <- data.frame(lang = repos$language, bug_issues_perc = repos$bug_issues_perc)
+# Remove outliers
+remove_outliers_from_data_frame <- function(data_frame, x) {
+    Q <- quantile(x, probs = c(.25, .75), na.rm = FALSE)
+    iqr <- IQR(x)
+    return(subset(data_frame, x > (Q[1] - 1.5 * iqr) & x < (Q[2] + 1.5 * iqr)))
+}
+repos_bugs <- remove_outliers_from_data_frame(repos_bugs, repos_bugs$bug_issues_perc)
+```
+
+# Visualising
+Generate a violin graph of all repos and their bug percentages using ggplot2
+
+```{r plotting-regression}
+# Include necessary libraries for doing these visualisations
+library(ggplot2)
+library(ggbeeswarm)
+library(ggforce)
+ggplot(repos_bugs) + # Base plot
+    aes(x = lang, y = bug_issues_perc) + # Set data format
+    geom_violin() + # Base violin plot
+    geom_sina() # Generate points on top of violin plot
+```
+
+```{r average-bugs, include = FALSE, eval = FALSE}
+langs_occur <- table(repos_bugs$lang)
+langs <- names(langs_occur)
+
+lang_bugs_avg <- repos_bugs %>%
+    group_by(lang) %>%
+        summarise(sum_bugs = mean(bug_issues_perc))
+lang_bugs_avg <- as.data.frame(lang_bugs_avg)
+
+lang_bugs_median <- repos_bugs %>%
+    group_by(lang) %>%
+      summarise(sum_bugs = median(bug_issues_perc))
+# TODO: Use R^2 instead of mean and average??
+lang_bugs_median <- as.data.frame(lang_bugs_median)
+lang_bugs <- data.frame(lang = lang_bugs_avg$lang, mean = lang_bugs_avg$sum_bugs, median = lang_bugs_median$sum_bugs)
+lang_bugs$occur <- langs_occur
+lang_bugs <- lang_bugs[order(lang_bugs$mean, lang_bugs$median, decreasing = TRUE), ]
+
+options("scipen" = 100, "digits" = 4)
+glm_fit <- glm(repos$bug_issues_perc ~ repos$language + repos$stars, family = "poisson")
+summary(glm_fit)
+```
