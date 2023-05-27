@@ -1,0 +1,57 @@
+---
+title: Exploring language distribution of GitHub repositories
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# Loading data
+
+```{r load-csv}
+repos <- read.csv2("repos_filtered_30_000.csv")
+```
+
+# Language distribution
+```{r format-data}
+langs <- table(repos$language)
+langs <- sort(langs, decreasing = TRUE)
+length(langs)
+```
+
+## Data frame
+```{r data-frame}
+langs_df <- data.frame(language = names(langs), occurences = as.numeric(langs))
+langs_occur_sum <- sum(langs_df$occurences)
+langs_df$occ_percent <- langs_df$occurences / langs_occur_sum * 100
+```
+
+```{r saving-results}
+write.csv2(langs_df, file = "language_occurrences.csv")
+```
+
+# Visualising
+## Wordcloud
+```{r wordcloud}
+library("wordcloud")
+wordcloud(names(langs), langs, col = rainbow(length(langs), rev = TRUE), rot.per = 0)
+```
+
+## Plot
+```{r plot}
+library(ggplot2)
+library(magrittr)
+library(dplyr)
+langs_df %>%
+    arrange(occurences) %>% # Order
+    mutate(language = factor(language, levels = language)) %>% # Trick to apply reordering
+    ggplot(aes(x = language, y = occurences)) +
+        geom_bar(stat = "identity", fill = "#f68060", alpha = .6, width = .4) +
+        geom_text(aes(label = occurences), position = position_stack(vjust = 0.5), color = "black") +
+        coord_flip() +
+        xlab("") +
+        theme_bw()
+```
+
+## Pie
+```{r pie, out.width = '100%'}
+pie(langs)
+```

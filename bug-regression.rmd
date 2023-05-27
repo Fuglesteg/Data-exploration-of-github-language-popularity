@@ -1,65 +1,106 @@
 ---
 title: Regression of bugs in GitHub repositories
 date: "`r Sys.Date()`"
-output: pdf_document
+output: word_document
 ---
 
-# Format data
-Load data from csv file
-```{r setup, include = FALSE}
+```{r setup}
 repos <- read.csv2("lang_repos.csv")
 ```
 
-Calculate percentage of bugs for each repo
+# Process data
+
+Here we calculate the percentage of bugs for each repo, later we use this in
+our regression model to see if there is correlation between choice of programming
+language and the amount of bugs reported on it.
+
 ```{r bug-percent}
+# Add bug issues percent and bug pull request percent as columns on every repo
 repos$bug_issues_perc <- repos$bug_issues / repos$issues * 100
 repos$bug_pull_requests_perc <- repos$bug_pull_requests / repos$pull_requests * 100
+
+# Remove data with malformed relationship between issues and bug issues
 repos <- repos[repos$bug_issues_perc != Inf, ]
 repos <- repos[!is.na(repos$bug_issues_perc), ]
 repos <- repos[repos$bug_issues_perc != 0, ]
-repos_bugs <- data.frame(lang = repos$language, bug_issues_perc = repos$bug_issues_perc)
+
 # Remove outliers
 remove_outliers_from_data_frame <- function(data_frame, x) {
     Q <- quantile(x, probs = c(.25, .75), na.rm = FALSE)
     iqr <- IQR(x)
     return(subset(data_frame, x > (Q[1] - 1.5 * iqr) & x < (Q[2] + 1.5 * iqr)))
 }
-repos_bugs <- remove_outliers_from_data_frame(repos_bugs, repos_bugs$bug_issues_perc)
+repos <- remove_outliers_from_data_frame(repos, repos$bug_issues_perc)
 ```
 
-# Visualising
-Generate a violin graph of all repos and their bug percentages using ggplot2
+# Regression
 
-```{r plotting-regression}
-# Include necessary libraries for doing these visualisations
-library(ggplot2)
-library(ggbeeswarm)
-library(ggforce)
-ggplot(repos_bugs) + # Base plot
-    aes(x = lang, y = bug_issues_perc) + # Set data format
-    geom_violin() + # Base violin plot
-    geom_sina() # Generate points on top of violin plot
-```
+First we calculate mean and median bugs for every language based on the
+previously calculated values of the mean and median bugs per repository.
+Then we perform regression on the processed data. We use linear regression with
+a formulae setting the dependent variable of the mean of bugs on a repository,
+independent variables as the language and the amount of stars (popularity).
 
-```{r average-bugs, include = FALSE, eval = FALSE}
-langs_occur <- table(repos_bugs$lang)
-langs <- names(langs_occur)
+```{r average-bugs, eval = FALSE}
+library(magrittr)
+library(tidyverse)
+langs_occur <- table(repos$language) # Occurrences of languages in repos
 
-lang_bugs_avg <- repos_bugs %>%
-    group_by(lang) %>%
+# Calculate mean of mean of repo bugs in repos
+lang_bugs_avg <- repos %>%
+    group_by(language) %>%
         summarise(sum_bugs = mean(bug_issues_perc))
 lang_bugs_avg <- as.data.frame(lang_bugs_avg)
 
-lang_bugs_median <- repos_bugs %>%
-    group_by(lang) %>%
+# Calculate mean of median of repo bugs in repos
+lang_bugs_median <- repos %>%
+    group_by(language) %>%
       summarise(sum_bugs = median(bug_issues_perc))
-# TODO: Use R^2 instead of mean and average??
 lang_bugs_median <- as.data.frame(lang_bugs_median)
-lang_bugs <- data.frame(lang = lang_bugs_avg$lang, mean = lang_bugs_avg$sum_bugs, median = lang_bugs_median$sum_bugs)
+
+# Construct data frame for viewing difference in averages
+lang_bugs <- data.frame(lang = lang_bugs_avg$language, mean = lang_bugs_avg$sum_bugs, median = lang_bugs_median$sum_bugs)
 lang_bugs$occur <- langs_occur
 lang_bugs <- lang_bugs[order(lang_bugs$mean, lang_bugs$median, decreasing = TRUE), ]
 
+# Aggregated mean and median bugs
+knitr::kable(lang_bugs, col.names = c("Language", "Mean Bug %", "Median Bug %", "Occurrences"))
+
 options("scipen" = 100, "digits" = 4)
-glm_fit <- glm(repos$bug_issues_perc ~ repos$language + repos$stars, family = "poisson")
-summary(glm_fit)
+
+# Linear regression of bugs per repo
+fit <- lm(repos$bug_issues_perc ~ repos$language + repos$stars)
+summary(fit)
+```
+
+# Visualisation
+
+```{r visualising}
+# Get the number of unique languages in the dataset
+n_languages <- length(langs_occur)
+
+# Generate a darker rainbow color palette for the dots
+dot_colors <- hcl(seq(15, 375, length.out = n_languages + 1), 100, 30)
+
+library(ggplot2)
+library(ggbeeswarm)
+library(ggforce)
+
+# Bar chart
+ggplot(repos, aes(x = language, y = bug_issues_perc, fill = language)) +
+    geom_col() +
+    labs(title = "Average Bug Percentage per Language",
+         x = "Language",
+         y = "Bug Percentage") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_fill_discrete(name = "Language")
+
+# Violin chart
+ggplot(repos) +
+    aes(x = language, y = bug_issues_perc) +
+    geom_violin(fill = "white") +
+    geom_sina(aes(color = language)) +
+    scale_color_manual(values = dot_colors) +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
 ```
