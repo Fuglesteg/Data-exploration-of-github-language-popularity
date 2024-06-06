@@ -1,0 +1,495 @@
+---
+title: "Programming languages on GitHub, bugs and popularity: An exploratory data journey"
+output: "html_notebook"
+fig_width: 160
+fig_height: 90
+out_width: 200%
+out_height: 200%
+---
+
+```{css, echo = FALSE}
+html {
+    margin: auto;
+    text-align: center;
+    max-width: 80vw;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+body {
+    font-size: 22px;
+    max-width: 80vw;
+}
+
+img {
+    max-width: fit-content;
+}
+
+.main-container {
+    align-items: center;
+    display: block;
+    justify-content: center;
+}
+
+.btn-group {
+    display: none;
+}
+
+p {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+div {
+    justify-content: center;
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    max-width: 90vw;
+}
+
+.block {
+    background: white;
+    padding: 0.5em;
+    border: 2px solid black;
+    border-radius: 10px;
+    text-align: left;
+    font-size: 18px;
+    min-width: 220px;
+    min-height: 200px;
+}
+
+.block > h3 {
+    text-align: center;
+}
+```
+
+<hr/>
+
+# Popularity of programming languages
+
+What programming languages are the most popular on GitHub?
+
+Here we have gathered a large dataset of the most popular GitHub repositories
+to answer this question and many more.
+
+We start off by visualising the popularity of programming languages according
+to our collected data. This is data gathered from the 100 000 most popular
+repositories on GitHub.
+
+*Note that not all languages are shown in this treemap, see the next graph for a list of all collected languages*
+
+![](./Treemap.png)
+
+Next we show the popularity of all programming languages in a new diagram.
+
+The important thing to observe is how varied software projects are in their
+choice of programming language. While the same few languages dominate, there is
+still room for experimentation with new languages.
+
+![](./Bar.png)
+
+<hr/>
+
+# Popularity of language features
+
+What languages support what features?
+
+How popular are these features?
+
+Here we analyze the popularity of features using the most popular programming
+languages.
+
+We do this by grouping the popularity of different programming languages into
+the features we intend to analyze. Next we present what features we wish to
+analyze.
+
+Language Features: 
+
+<div style="display: flex; gap: 40px; flex-direction: row;">
+<div class="block">
+### Type systems
+
+- Static 
+- Dynamic
+</div>
+
+<div class="block">
+### Compiled and Interpreted languages
+
+- Scripting
+- Native compilation
+- Byte code compilation
+</div>
+
+<div class="block">
+### Supported Paradigms
+
+- Functional
+- Procedural
+- Object Oriented
+- Multi-paradigm
+</div>
+</div>
+
+If a language supports multiple paradigms we give it the feature of
+"Multi-paradigm"
+
+*Size is proportional to popularity*
+
+```{r, cache = FALSE, echo = FALSE, dpi = 150, fig.width = 16, fig.height = 9, out.width = "1920px", out.height = "1080px"}
+library(igraph)
+library(magrittr)
+library(dplyr)
+library(visNetwork)
+library(plotly)
+library(GGally)
+library(network)
+library(sna)
+library(intergraph)
+library(tidygraph)
+library(ggraph)
+
+# Load datasets from csv files
+lang_repos <- read.csv2("lang_repos_clean_100_000_v2.csv")
+lang_feats <- read.csv2("language_features.csv")
+
+# Find occurrences of each language
+langs <- lang_repos$language %>% table()
+
+# Create edges to be used in network graph using a csv -
+# file mapping languages to features
+edges <- lang_feats %>%
+    select(from = language, to = feature)
+
+# Get all features
+features <- lang_feats$feature %>% table() %>% names()
+
+# Get only language occurrences
+lang_occurrences <- langs %>% unlist() %>% unname()
+names(lang_occurrences) <- c()
+
+# Construct nodes for use in network graph
+nodes <- data.frame(node = names(langs), occurrences = lang_occurrences)
+nodes$occurrences.Var1 <- NULL
+nodes$occurrences <- nodes$occurrences.Freq
+nodes$occurrences.Freq <- NULL
+nodes$type <- "Language"
+nodes <- nodes[nodes$node %in% edges$from, ]
+
+# Construct Features data frame to calculate popularity of features
+features_df <- data.frame(node = features)
+features_df$type <- "Feature"
+features_df$occurrences <- 0
+
+# Calculate popularity of features
+for (i in features_df$node) {
+    feat_langs <- edges[edges$to == i, ]$from
+    features_df[features_df$node == i , ]$occurrences <- sum(langs[names(langs) %in% feat_langs])
+}
+
+# Add features to nodes
+nodes <- rbind(nodes, features_df)
+
+# Construct graph object from data frame
+g_data <- graph_from_data_frame(d = edges, vertices = nodes, directed = TRUE)
+
+# Set seed for generating graph
+set.seed(354453)
+
+# Size of nodes
+v.size <- V(g_data)$occurrences
+
+# Colors of edges
+arc_colors <- rainbow(8400)
+
+# Generate network graph
+feat_plot <- g_data %>%
+    ggraph(layout = "lgl") +
+    geom_edge_arc(colour=arc_colors,
+                  lineend = "round",
+                  strength = .5,
+                  alpha = .5) +
+    theme_graph(background = "white") +
+    geom_node_point(size = v.size/1500, aes(color = type)) +
+    geom_node_text(aes(label = name), 
+               repel = TRUE, 
+               colour="gray40") +
+    theme(legend.position = "top")
+
+feat_plot
+
+```
+
+<hr/>
+
+Next we compare the popularity of these language features.
+
+Note that we have categorized for example JavaScript and TypeScript as
+functional languages. Though these are not considered pure functional languages
+they implement many of the features of a functional programming language and
+considering that no pure functional programming languages made it into the top
+ten it does not make it very interesting to analyze.
+
+<hr/>
+
+```{r, cache = TRUE, echo = FALSE, dpi = 100, fig.width = 16, fig.height = 9, out.width = "1920px", out.height = "1080px"}
+
+# Sort features based on popularity
+features_df <- features_df[order(features_df$occurrences, decreasing = TRUE), ]
+features_df$node <- factor(features_df$node, levels = features_df$node)
+
+# Present the feature popularity in a bar chart
+feat_bar <- features_df %>% ggplot(aes(x = node, y = occurrences, fill = node)) +
+    geom_col() +
+    labs(x = "Feature", y = "Popularity") +
+    scale_fill_discrete(name = "Feature")
+
+ggplotly(feat_bar)
+
+```
+
+What is interesting to note is while purely procedural languages are largely
+considered as a limiting paradigm, it is still supported by every language in
+the top 10. While more modern languages are usually multi paradigm it seems
+very unpopular to not support procedural programming.
+
+<hr/>
+
+# Prediction of future popularity of languages
+
+How will the popularity of programming languages change in the future.
+
+Here we compare language trends and make predictions about their popularity
+into the future.
+
+Note that the prediction is layered on top of the actual data so we can see how well our
+model matches the collected data.
+
+*The top ten languages are shown by default, click on languages in the sidebar to view more or less data.*
+
+```{r, cache = TRUE, echo = FALSE, dpi = 100, fig.width = 16, fig.height = 9, out.width = "1920px", out.height = "1080px"}
+
+lang_repos_clean <- read.csv2("lang_repos_clean_100_000_v2.csv")
+
+library(magrittr)
+
+# Format date strings to date data type
+lang_repos_clean$createdAt <-  lang_repos_clean$createdAt %>% as.Date(format = "%Y-%m-%d")
+lang_repos_clean$pushedAt <- lang_repos_clean$pushedAt %>% as.Date(format = "%Y-%m-%d")
+
+# Find the start and end date
+min <- lang_repos_clean[which.min(lang_repos_clean$createdAt), ]$createdAt
+max <- lang_repos_clean[which.max(lang_repos_clean$createdAt), ]$createdAt
+
+# Create sequence timeline spanning timespan
+range <- as.Date(seq(min, max, by = "day"))
+
+# Extract the languages that occur in the dataset as unique values
+languages <- lang_repos_clean$language %>% unlist() %>% table() %>% names()
+top_languages <- lang_repos_clean$language %>% unlist() %>% table() %>% sort(decreasing = TRUE)
+
+# Create timeline for processing language popularity
+lang_timeline <- data.frame(day = range)
+
+# Add languages as columns in timeline
+lang_df <- data.frame(matrix(0, ncol = length(languages)))
+colnames(lang_df) <- languages
+lang_timeline <- cbind(lang_timeline, lang_df)
+
+# For every repo add 1 to the timespan where it has been active createdAt -> pushedAt
+for (i in 1:nrow(lang_repos_clean)) {
+    repo <- lang_repos_clean[i, ]
+    lang_timeline[as.numeric(lang_timeline$day) %in% repo$createdAt:repo$pushedAt, repo$language] <-
+        lang_timeline[as.numeric(lang_timeline$day) %in% repo$createdAt:repo$pushedAt, repo$language] + 1
+}
+
+# Remove most recent data as it is inaccurate
+lang_timeline <- lang_timeline[lang_timeline$day < max - 500, ]
+
+# Turn timeline language columns into variables on "variable" column
+library(reshape2)
+lang_time_df <- melt(lang_timeline, id.vars = "day")
+
+# Numerical date representation for use in regression model
+lang_time_df$day_num <- as.numeric(lang_time_df$day)
+
+# Remove further unused column
+lang_time_df$day_num <- NULL
+
+# Change name of column "variable"
+lang_time_df$Language <- lang_time_df$variable
+lang_time_df$variable <- NULL
+
+lang_order <- langs %>% sort(decreasing = TRUE) %>% names()
+
+lang_time_df$Language <- factor(lang_time_df$Language, levels = lang_order)
+lang_time_df <- lang_time_df[order(match(lang_time_df$Language, lang_order)), ]
+# Visualising current model and data with the model prediction up to 2030
+# Model is generated again internally in graph,
+# but uses the same model and formulae as "timeline.fit"
+library(ggplot2)
+trend_plot <- ggplot(lang_time_df, aes(x = day, y = value, col = Language)) +
+    geom_line() +
+    xlim(min, as.Date("2030-01-01")) +
+    ylim(0, 14000) +
+    xlab("Date") +
+    ylab("Popularity") +
+    labs(fill = "Language", title = "Future trends of the top 10 programming Languages") +
+    geom_vline(xintercept = max - 500) +
+    stat_smooth(
+        aes(x = day, y = value, col = Language, linetype = Language),
+        method = "gam", formula = y ~ s(x, bs = "cs"),
+        fullrange = TRUE) +
+    theme_bw()
+
+library(plotly)
+trend_plot <- ggplotly(trend_plot)
+p.length <- lang_time_df$Language %>% table() %>% length()*2
+
+# Disable everything except the top 10 languages
+trend_plot <- style(trend_plot, visible = "legendonly", traces = c(10:(p.length/2), (p.length/2+10):(p.length+1)))
+trend_plot
+
+```
+
+There are many interesting observations to be made here. For example,
+TypeScript overtaking JavaScript, C# overtaking Java. The "pure" functional
+programming languages seem to have a stable popularity except for Clojure and
+Haskell which appear to be in a downward trend.
+
+# Distribution of bugs in each language
+
+Is there any correlation between the amount of bugs in a repository and the
+choice of programming language used in that repository?
+
+Here we intend to analyze this relation to see if there is any correlation, and
+if so what languages are most associated with bugs.
+
+Each dot represents a repository and it's position in the chart represents that
+repositories average percentage of reported bugs.
+
+The percentage is based on GitHub issues and pull requests meaning that any
+issue or pull request labeled as a bug or bug fix would contribute to the bug
+percentage.
+
+*Hover over a dot to see what repository it represents.*
+
+```{r, cache = TRUE, echo = FALSE, dpi = 100, fig.width = 16, fig.height = 9, out.width = "1920px", out.height = "1080px"}
+repos <- read.csv2("bug_repos.csv")
+
+# Add bug issues percent and bug pull request percent as columns on every repo
+repos$bug_issues_perc <- repos$bug_issues / repos$issues * 100
+repos$bug_pull_requests_perc <- repos$bug_pull_requests / repos$pull_requests * 100
+
+# Remove data with malformed relationship between issues and bug issues
+repos <- repos[repos$bug_issues_perc != Inf, ]
+repos <- repos[!is.na(repos$bug_issues_perc), ]
+repos <- repos[repos$bug_issues_perc != 0, ]
+
+# Remove outliers
+remove_outliers_from_data_frame <- function(data_frame, x) {
+    Q <- quantile(x, probs = c(.25, .75), na.rm = FALSE)
+    iqr <- IQR(x)
+    return(subset(data_frame, x > (Q[1] - 1.5 * iqr) & x < (Q[2] + 1.5 * iqr)))
+}
+repos <- remove_outliers_from_data_frame(repos, repos$bug_issues_perc)
+
+library(magrittr)
+library(tidyverse)
+langs_occur <- table(repos$language) # Occurrences of languages in repos
+
+# Calculate mean of mean of repo bugs in repos
+lang_bugs_avg <- repos %>%
+    group_by(language) %>%
+        summarise(sum_bugs = mean(bug_issues_perc))
+lang_bugs_avg <- as.data.frame(lang_bugs_avg)
+
+# Calculate mean of median of repo bugs in repos
+lang_bugs_median <- repos %>%
+    group_by(language) %>%
+      summarise(sum_bugs = median(bug_issues_perc))
+lang_bugs_median <- as.data.frame(lang_bugs_median)
+
+# Construct data frame for viewing difference in averages
+lang_bugs <- data.frame(lang = lang_bugs_avg$language, mean = lang_bugs_avg$sum_bugs, median = lang_bugs_median$sum_bugs)
+lang_bugs$occur <- langs_occur
+lang_bugs <- lang_bugs[order(lang_bugs$mean, lang_bugs$median, decreasing = TRUE), ]
+
+
+# Get the number of unique languages in the dataset
+n_languages <- length(langs)
+
+# Generate a darker rainbow color palette for the dots
+dot_colors <- hcl(seq(15, 375, length.out = n_languages + 1), 100, 30)
+
+library(ggplot2)
+library(ggbeeswarm)
+library(ggforce)
+
+# Violin chart
+bugs_viol <- ggplot(repos, aes(x = language, y = bug_issues_perc, text = name, group = language)) +
+    geom_violin(fill = "white") +
+    geom_sina(aes(color = language)) +
+    scale_color_manual(values = dot_colors) +
+    labs(x = "Language", y = "Percentage of issues that are bugs") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+bugs_viol <- ggplotly(bugs_viol)
+bugs_viol
+
+```
+
+<hr/>
+
+We can already see that there are slight differences in the distribution of bugs in the languages.
+
+Now we will aggregate the data into mean and median bug percentage for each language.
+
+This table shows the mean and median percentage of bugs for all repositories
+using a particular programming language.
+
+*The table is sorted by the languages that have the most bugs.*
+
+<hr/>
+
+```{r, cache = TRUE, echo = FALSE, dpi = 100, fig.width = 16, fig.height = 9, out.width = "1920px", out.height = "1080px"}
+knitr::kable(lang_bugs, col.names = c("Language", "Mean Bug %", "Median Bug %", "Occurrences of Language"))
+```
+
+<hr/>
+
+Visualising this data into a bar chart reveals the relation of bugs between the languages.
+
+<hr/>
+
+```{r, cache = TRUE, echo = FALSE, dpi = 100, fig.width = 16, fig.height = 9, out.width = "1920px", out.height = "1080px"}
+
+lang_bugs$lang <- factor(lang_bugs$lang, levels = lang_bugs$lang)
+
+# Bar chart
+bugs_bar <- ggplot(lang_bugs, aes(x = lang, y = mean, fill = lang)) +
+    geom_col() +
+    labs(title = "Average Bug Percentage per Language",
+         x = "Language",
+         y = "Bug Percentage") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_x_discrete(limits = rev(levels("lang"))) +
+    scale_fill_discrete(name = "Language")
+
+ggplotly(bugs_bar)
+
+```
+
+Here we can see the languages that according to our data is likely to produce
+the most bugs. These results may seem unexpected, a scripting language
+(PowerShell) being first on the list is not very surprising, but C# and
+TypeScript being so high on the list is very surprising. This might hint to a
+shift in culture of the reporting of bugs in newer languages. Perhaps users of
+newer languages are more likely to use GitHub issues to report bugs. This could
+however also be explained by newer languages not being as mature and developed
+leading to more bugs. Conventions may not be fully developed yet which could
+lead to larger projects written in newer languages to suffer.
